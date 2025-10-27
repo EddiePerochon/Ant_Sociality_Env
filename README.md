@@ -1,20 +1,3 @@
----
-# output: github_document
-output: html_document
----
-
-<!-- README.md is generated from README.Rmd. Please edit that file -->
-
-```{r, echo = FALSE}
-knitr::opts_chunk$set(
-  collapse = TRUE,
-  comment = "#>",
-  fig.path = "README-"
-)
-# Please put your title here to include it in the file below.
-Title <- "Environmental conditions shape the global distribution of ant sociality"
-```
-
 ## Research Article
 
 This repository contains the code and data used to carry out analyses for this research article:
