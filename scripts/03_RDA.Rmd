@@ -1,0 +1,523 @@
+---
+title: "27_RDA"
+author: "Eddie Pérochon"
+date: "2025-02-21"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+##### Script O3: Redundancy analysis #####
+
+###################################################
+#      Authors: Eddie Pérochon                    #
+#      Contact: eddie.perochon@hotmail.com        #
+###################################################
+
+### Goals = 
+##### Evaluate which isolated environmental factors are associated with trait compositions #####
+
+# Group assemblages with similar trait compositions (continuous)
+# Compute the Redundancy analysis
+
+### Inputs 
+# Phylogenetic and spatial eigen vectors (Script 02)
+# Selected assemblages after filtering for sampling bias (Script 01)
+# Values of trait prevalences per assemblage and values of environmental factors per ecoregion
+###
+
+### Outputs
+
+# Redundancy analysis
+# Fig. 1
+
+###
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+#Packages
+library(sf) #v1.0.14
+library(spdep) #v1.3.6
+library(terra) #v1.8.29
+library(stringr) #v1.5.1
+library(ape) #v5.8
+library(ade4) #v1.7.22
+library(iNEXT) #v3.0.1
+library(adespatial) #v0.3.24
+library(readxl) #v1.4.3
+library(adephylo) #v1.1.16
+library(ggtree) #v3.11.0
+library(ggnewscale) #v0.5.0
+library(gawdis) #v0.1.5
+library(ggplot2) #v3.5.2
+library(factoextra) #v1.0.7.999
+library(colorspace) #v2.1.0
+library(grid) #v4.2.2
+library(ggimage) #v0.3.3
+library(png) #v0.1.8
+library(imager) #v0.45.2
+library(car) #v3.1.2
+library(FNN) #v1.1.3.2
+library(colorspace) #v2.1.0
+library(TeachingDemos) #v2.13
+library(rgl) #v1.3.1
+library(chroma) #v0.2
+library(entropart) #v1.6.13
+library(vegan) #v2.6.4
+```
+
+```{r}
+#Data 
+
+#Selected ecoregions
+#Ecoregions with trait and environment data, filtered from sampling bias (Script 01)
+ecor_mod <- readRDS("../input_files/ecoregions_for_analysis.RDS")
+
+#Trait prevalences column names in ecoregion table
+traits <- c("bcspr", #Big colony size proportion
+            "pwppr", #Polymorphic workers proportion
+            "prspr") #Polygyne reproductive structure proportion
+
+
+#Spatial and phylogenetic eigenvectors
+load("../outputs/MEM_PEM_fullset.RDATA")
+
+#Predictors
+pred <- c("Temp", "Humid", "Seaso", "Topo", "Soil", "Npp", "AntDiv")
+spred <- paste0("s", pred)
+
+#Tranform AntDiversity in log because of extreme values
+ecor_mod$AntDiv <- as.numeric(log(ecor_mod$AntDiv))
+
+#Scale predictors
+row.names(ecor_mod) <- ecor_mod$id
+  for(i in pred)
+    {
+  ecor_mod[,paste0("s",i)] <- as.numeric(c(scale(ecor_mod[,i])))
+  
+  }
+#NA become min(sAntDiv) in Antdiv as original 0s becom -Inf
+ecor_mod$sAntDiv[is.na(ecor_mod$sAntDiv)] <- min(ecor_mod$sAntDiv)
+
+#Matrix of phylogenetic distances
+mat_phy <- readRDS("../outputs/phy_diss.RDS")[[1]]
+      row.names(mat_phy) <- colnames(mat_phy)
+      mat_phy <- mat_phy[!colSums(is.na(mat_phy)) == ncol(mat_phy)-1, !rowSums(is.na(mat_phy)) == nrow(mat_phy)-1]
+      mat_phy <- mat_phy[colSums(is.na(mat_phy)) < 1, rowSums(is.na(mat_phy)) < 1]
+            mat_phy <- mat_phy[row.names(mat_phy) %in% ecor_mod$id, colnames(mat_phy) %in% ecor_mod$id]
+
+```
+
+
+
+```{r}
+# Cluster ecoregion based on similarity of trait compositions
+row.names(ecor_mod) <- ecor_mod$id
+
+#Create a distance object based on gawdis distance (de Bello et al. 2021; https://doi.org/10.1111/2041-210X.13537)
+dist_tab <- gawdis::gawdis(ecor_mod[,traits], w.type = "equal")
+
+#Hierarchical clustering with wardD2
+tr_clu <- hclust(dist_tab, method = "ward.D2")
+
+plot(as.dendrogram(tr_clu))
+
+
+```
+
+
+```{r}
+####Select colors for each assemblages, based on their distance in term of trait composition (Sebastien Ollier)
+
+#### Creating color code 
+### Sources functions
+source("../functions/initiate.R")
+source("../functions/move.R")
+
+### Load necessary datasets
+## Cloud of colors reference (equivalent to rgb space but in LAB pseudo-euclidean system)
+load("../input_files/colors/LAB.RData")
+coords_LAB <- as.matrix(coords_LAB)
+
+## A subset of colour used in R in order to move our dataset according to known colours
+load("../input_files/colors/col_LAB.RData")
+
+### Compute cophenetic distances so the color are distant proportionally to distance on the tree
+coph <- as.dist(log((cophenetic(tr_clu)+1)*1000))
+#Coordinate analysis to have only 3 axis that represent those distances
+tpco <- dudi.pco(coph, nf = 3, scannf = F)
+tab <- tpco$li
+
+
+## You can force the function to expanse your cloud outside the colour cloud --> more contrasts beteen yours colours but you wil no more respect the distances between points as points outside the colour cloud or reference are projected on the external surface of the cloud
+ini <- initiate(coords = tab, coords_LAB, hex_LAB, inside = FALSE, s = 1.6)
+
+### Move your data cloud according to colours (optionnal)
+#--> for exemple, with koppengeiger you would like that Af == green and EF == cyan
+## With two points, no deformation: define a new cloud with a new palette
+from <- c( "e224", "e600")	#--> extrem points
+to <- c("cyan", "violet")
+
+# Move the cloud
+mov <- move(ini$coords, ini$coords_LAB, hex_LAB, col_LAB, from = from, to = to)
+
+# Define the new palette
+knn <- FNN::get.knnx(ini$coords_LAB, mov, k = 1)
+w <- knn$nn.index[,1]
+pal <- hex_LAB[w]
+
+#Saturate it a bit more
+pals <- prismatic::clr_saturate(pal, shift = 0.7)
+
+#Keep it in the dataframe
+ecor_mod$palette <- as.numeric(as.factor(pals))
+ecor_mod$cols <- pals
+
+saveRDS(ecor_mod, "../input_files/colors/ecoregions_colors.RDS") 
+
+
+```
+
+
+```{r}
+#### Redundancy analysis
+
+#Response table
+X <- ecor_mod[,traits]
+
+#Evaluate spatial  and phylogenetic vectors
+Y <- cbind(eigenvec_s,  eigenvec_p[,1:300]) #More eigen vectors messup the code. Most of the information is in the first vectors normally to discarding the lasts does not really change anything
+Y <- cbind(Y, ecor_mod[,spred])
+
+#We select eigen vectors with an stepwise procedure
+#Most basic model, no factors
+rda0<-rda(X ~ 1, Y)
+#Most complex model, with all the factors
+rdaG<- rda(X ~ ., Y)
+
+#Stepwise selection
+set.seed(10403)
+Sel <- ordiR2step(rda0, scope = formula(rdaG), direction="both", R2scope = TRUE,
+    pstep = 1000, trace = FALSE)
+
+#Extract selected vectors, and keep our explaining factors
+form <- as.formula(paste0("X~", 
+                          paste(unique(c(spred, str_replace_all(row.names(Sel$anova), "[+] ", "")[1:(length(row.names(Sel$anova))-1) ] )), collapse = "+")))
+
+
+#Factor table (factors + eigenvectors)
+Z <- Y[, unique(c(spred, str_replace_all(row.names(Sel$anova), "[+] ", "")[1:(length(row.names(Sel$anova))-1) ]))]
+
+#Compute the redundancy analysis
+tr_rda <- rda(form, data = Z)
+saveRDS("../outputs/RDA.RDS")
+
+#R² adjusted to variable number
+RsquareAdj(tr_rda)
+
+#Extract coordinates
+site <- vegan::scores(tr_rda, display="sites", choices=c(1,2), scaling=1)
+
+#Significance tests
+anov <- anova.cca(tr_rda, step = 10000, by = "margin")
+
+```
+
+```{r}
+###Test spatial and phylogenetic autocorrelation in RDA
+
+##SPATIAL AUTOCORR
+
+# Get the residuals of the model
+resid_rda <- residuals(tr_rda)          
+
+#RDA with only selected factors (no eigen vectors) to test for presence of autocorrelation in our initial dataset
+form <- as.formula(paste0("X~", paste(spred, collapse = "+")))
+X <- ecor_mod[,traits]
+Y <-  ecor_mod[,spred]
+
+test_rda <- rda(form, data = Y)
+
+#Neighborhood matrix
+load("../input_files/neighbor_matrix.RDATA")
+
+#Filter out ecoregion that we do not have in the dataset
+bnd1 <- bound[names(bound) %in% ecor_mod$OBJECTID]
+ord <- order(as.numeric(names(bnd1)))
+nm <- as.numeric(names(bnd1))
+
+
+for(i in 1:length(bnd1))
+{
+  bnd1[[i]] <- bnd1[[i]][bnd1[[i]] %in% ecor_mod$OBJECTID]
+  bnd1[[i]] <- ord[match(bnd1[[i]], nm)]
+}
+
+names(bnd1) <- as.character(ord)
+bnd1[lengths(bnd1) == 0] <- 0
+bnd1<- lapply(bnd1, "as.integer")
+class(bnd1) <- "nb"
+
+listwt <- nb2listw(bnd1, style = "W", zero.policy = T)
+
+##SPATIAL AUTOCORR test
+#Real RDA with MEM & PEM
+moran.randtest(x = resid_rda, listw = listwt) #No significant
+
+#RDA without it
+resid_test <- residuals(test_rda)
+moran.randtest(x = resid_test, listw = listwt) #All significant
+
+## PHYLO AUTOCORR
+phy_prox <- 1-mat_phy
+
+adephylo::abouheif.moran(x = resid_test, W = phy_prox) #All significant
+adephylo::abouheif.moran(x = resid_rda, W = phy_prox) #No significant
+
+```
+
+
+```{r}
+#Objects to produce fig 1.
+
+#Pictograms names
+prpict <- c("Temperature", "Humidity", "Seasonality", "Topology", "Soil structure", "Ressources", "Competition")
+pict <- c("csize", "MinMaxBodySize", "Polygyny")
+
+#Order the color palette to make it look good
+palphen <- c("#006375FF", "#006A79FF", "#AEB51CFF", "#89B61CFF", "#1DBA47FF", "#21D9A5FF","#30E1C8FF", "#2AFFF6FF",  "#24FEFFFF", "#F978F9FF", "#D86FF1FF", "#D670F2FF", "#CD71F1FF") 
+palphen <-colorRampPalette(palphen)(100)
+
+pred <- c("Temp", "Humid", "Seaso", "Topo", "Soil", "Npp", "AntDiv")
+spred <- paste0("s", pred)
+```
+
+
+```{r}
+#Plot Fig 1
+
+pdf(paste0("../outputs/fig_1.pdf"), width = 26, height = 13)
+
+# Set up the layout
+layout_matrix <- matrix(c(1,2), nrow = 1, ncol = 2, byrow = TRUE)
+layout(layout_matrix, heights = c(1.5,1.5))
+par(mar = c(0, 0, 0, 0), oma = c(0,0,0,0))
+
+#Plot the hierarchical clusters
+tr_phy <-  as.phylo(tr_clu)
+pal <- c("#1A2021FF", "#2F3536FF", "#555C4EFF", "#A5A79EFF", "#D2D7D1FF", "#FFD480FF","#E09743FF","#D25A3EFF", "#D42538FF", "#A6162BFF")
+names(pal) <- seq(0,1, length.out = 10)
+
+tab <- ecor_mod
+row.names(tab) <- tab$id
+
+plot.new()
+
+p <- ggtree(tr_phy, size = 1.4)
+p1 <- gheatmap(p, tab[,"palette", drop = FALSE],  offset = -0.035, color=NULL,  font.size=0, width = 0.065 , colnames =FALSE)+
+  scale_fill_gradientn(colors = pal_ord, name = "Clusters") +
+  new_scale_fill()
+
+p2 <-  gheatmap(p1, tab[, traits, drop = FALSE],  offset = 0, color=NULL,  font.size=0, width = 0.5 ,colnames_position = "top",
+                colnames_offset_y = 2,
+                colnames = TRUE)+
+  scale_fill_gradientn(colours = pal, name = "Trait %") +
+ theme( plot.margin = margin(t = 3.5,  # Top margin
+                             r = 0.5,  # Right margin
+                             b = 0.5,  # Bottom margin
+                             l = 0.5,  # Left margin
+                             unit = "cm"),
+        legend.position = 'none')
+
+pushViewport(viewport(layout = grid.layout(nrow = 1, ncol =2,  heights =c(1.5,1.5))))  # Create a viewport layout
+print(p2, vp = viewport(layout.pos.row = 1, layout.pos.col = 1, width = unit(5, "npc"), height = unit(5, "npc")))
+xstr = 0.65
+ystr = 0.93
+
+#Plot trait pictograms
+for(q in 1:3)
+{
+  trp <- readPNG( paste0("../obj_for_figures/",pict[q],".png"))
+  rasterImage(trp, xstr, ystr, xstr+0.14, ystr+0.1)
+  xstr <- xstr + 0.105
+}
+
+#Prevalences legend
+fields::image.plot(
+  breaks = seq(0, 1, 0.1),
+  col = pal,
+  legend.only = T,
+  x = 0.1,
+  legend.shrink = 0.5,
+  add = T,
+  graphics.reset = T,
+  smallplot = c(0.12, 0.17, .61, .89),
+  axis.args= list(cex.axis = 2,
+  lwd =2,
+  lwd.ticks=2)
+)
+text(x = 0.07, y= 0.97, "Trait\nPrevalences", cex =2.1, pos =4)
+
+#Composition legend
+fields::image.plot(
+  breaks = seq(0, 1, length.out = length(palphen) + 1),
+  col = palphen,
+  legend.only = T,
+  x = 0.1,
+  legend.shrink = 0.5,
+  add = T,
+  graphics.reset = T,
+  smallplot = c(0.29, .34, .61, .89),
+  axis.args=list(tck = 0, at = NULL, labels = FALSE, lwd =0)
+)
+text(x = 0.26, y= 0.97, "Trait\nCompositions", cex =2.1, pos =4)
+text(x = -0.04, y = 0.99, labels = "(a)", cex = 3, pos = 4)
+
+#Bracket and groups
+##Cluster 1
+xstr <- 0.975
+ystr <- 0.44
+
+  brk <- readPNG(paste0("../obj_for_figures/picto/accolade.png"))
+  rasterImage(brk, xstr, ystr, xstr+0.06, ystr+0.49)
+  
+#Cluster 2  
+xstr <- 0.975
+ystr <- 0.237
+  rasterImage(brk, xstr, ystr, xstr+0.06, ystr+0.22)
+
+#Cluster 3  
+xstr <- 0.975
+ystr <- -0.03
+  rasterImage(brk, xstr, ystr, xstr+0.06, ystr+0.28)
+
+
+par(new = FALSE)
+
+plot.new()
+text(x = -0.04, y = 0.99, labels = "(b)", cex = 3, pos = 4)
+par(new = TRUE)
+
+#####RDA plot
+
+#Axes contributions
+perc1 <- round(summary(eigenvals(tr_rda, model = "constrained"))[,"RDA1"][2],3)*100
+perc2 <- round(summary(eigenvals(tr_rda, model = "constrained"))[,"RDA2"][2],3)*100
+
+#Coord for arrows
+arcoord <- data.frame(x = vegan::scores(tr_rda, display="bp", choices=1, scaling=1), y = vegan::scores(tr_rda, display="bp", choices=2, scaling=1) )
+arcoord <- arcoord[row.names(arcoord) %in% spred,]
+
+mfac <- 2.9
+
+pred_sign <- row.names(anov)[anov$`Pr(>F)` <= 0.05]
+pred_sign <- pred_sign[pred_sign %in% spred]
+
+#Plot
+qorder <- as.numeric(names(sort(table(ecor_mod$palette))))
+
+sigmoid <- function(x, a = 1) { 2 / (1 + exp(-a * x)) - 1 }
+
+site <- cbind(vegan::scores(tr_rda, display="sites", choices=c(1,2), scaling=1), ecor_mod[,"palette"])
+
+#Transform axis with sigmoid
+site[,1] <- sigmoid(site[,1], a = 15)
+site[,2] <- sigmoid(site[,2], a = 15)
+
+par(mar = c(14,12,4,6))
+
+plot(tr_rda, scaling=1, main="", type="none",   xlim=c(-1, 1), ylim=c(-1, 1), axes = F, ann = F,  cex.lab=3)
+
+title(xlab=paste0("S(RDA-1) (", perc1, "%)"), ylab=paste0("S(RDA-2) (", perc2, "%)"), line = 4, cex.lab = 3)
+
+for(i in qorder)
+{
+  points(site[site[,3] == i, 1] , site[site[,3] == i, 2], col=pal_ord[i] ,bg=pal_ord[i], pch=21, cex=4) 
+}
+box(lwd = 3)
+axis(1, tck=0, cex.axis = 3, padj = 0.2)
+axis(2, tck=0, cex.axis = 3, padj = -0.2)
+
+
+grid(lwd = 3, col = "darkgrey")
+abline(h = 0, col = "black", lwd = 3)
+abline(v = 0, col = "black", lwd = 3)
+
+shape::Arrows(x0 = 0, x1 =  arcoord$RDA1*mfac, y0 = 0, y1 = arcoord$RDA2*mfac, lwd =10, arr.width = 0.6, arr.length = 0.8,arr.type = "triangle")
+shape::Arrows(x0 = 0, x1 =  arcoord$RDA1[row.names(arcoord) %in% pred_sign]*mfac, y0 = 0, y1 = arcoord$RDA2[row.names(arcoord) %in% pred_sign]*mfac, lwd =10, arr.width = 0.6, arr.length = 0.8,arr.type = "triangle", col = "red")
+
+#Plot pictograms on the RDA plot
+
+prpict <- c("Temperature", "Humidity", "Seasonality", "Topology", "Soil structure", "Ressources", "Competition")
+
+for(q in 1:length(pred))
+{
+  trp <- readPNG(paste0("../obj_for_figures/picto/",prpict[q],"_b.png"))
+  mfac2 <- mfac*1.02
+
+  #Case with pictogram really closeby
+  delt <- 0.27
+  incr <- 0.12
+  
+  while((abs(arcoord[q,"RDA1"]*mfac2)+(incr) - abs(arcoord[q,"RDA1"]*mfac))  < delt & (abs(arcoord[q,"RDA2"]*mfac2)+(incr) - abs(arcoord[q,"RDA2"]*mfac))  < delt )
+  {
+    mfac2 <- mfac2+0.01
+  }
+
+  xstr <- arcoord[q,"RDA1"]*mfac2-incr
+  xend <- arcoord[q,"RDA1"]*mfac2+incr
+  ystr <- arcoord[q,"RDA2"]*mfac2-incr
+  yend <- arcoord[q,"RDA2"]*mfac2+incr
+
+  rasterImage(trp, xstr, ystr, xend, yend)
+}
+
+text(x = 0.85, y = 0.95, labels = paste0("R²=",round(RsquareAdj(tr_rda)[[2]], 2)), cex = 3) 
+
+
+#Legend with pictogrames
+par(new = TRUE, mar = c(0.01,6,4,4))
+
+plot.new()
+
+xstr <- 0.05
+ystr <- 0.04
+prpict <- c("Temperature", "Humidity", "Seasonality", "Topology", "Soil structure", "Ressources", "Competition")
+predl <- c("Temperature", "Humidity", "Seasonality", "Topology", "Soil structure", "Resources", "Ant diversity")
+
+for(q in 1:7)
+{
+  trp <- readPNG(paste0("../obj_for_figures/picto/",prpict[q],"_b.png"))
+  rasterImage(trp, xstr, ystr, xstr+0.072, ystr+0.068)
+  text(xstr+0.07,ystr+0.03, label = predl[q], col = "black", cex = 1.7, pos = 4)
+  ystr <- ystr - 0.07
+
+  if(q %% 2 == 0)
+  {
+    ystr <- 0.04
+    xstr <- xstr + 0.25
+  }
+}
+
+#Cluster numbers on left panel
+par(mfrow = c(1,1), new = TRUE)
+plot.new()
+  text(0.484, 0.733, label = "1", col = "black", cex = 4.6, pos = 4)
+    text(0.484, 0.37, label = "2", col = "black", cex = 4.6, pos = 4)
+  text(0.484, 0.117, label = "3", col = "black", cex = 4.6, pos = 4)
+
+
+
+
+dev.off()
+
+```
+
+

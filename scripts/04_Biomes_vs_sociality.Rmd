@@ -1,0 +1,689 @@
+---
+title: "04_Biomes_vs_sociality"
+author: "Eddie Pérochon"
+date: "2025-04-16"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+##### Script O4: Link Biomes and social trait composition #####
+
+###################################################
+#      Authors: Eddie Pérochon                    #
+#      Contact: eddie.perochon@hotmail.com        #
+###################################################
+
+### Goals = 
+##### Evaluate which biomes are associated with trait compositions #####
+
+# Cluster assemblages with similar trait compositions (discrete)
+# Find which biomes are associated with each composition
+
+### Inputs 
+# Selected assemblages after filtering for sampling bias (Script 01). Biome classification (Dinerstein et al. 2017; https://doi.org/10.1093/biosci/bix014) is in the same object.
+###
+
+### Outputs
+#Best matches between biomes and social trait compositions, with support metrics
+#Fig. 2
+###
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+#### Packages
+
+library(mcclust) #v1.0.1
+library(mclust) #v6.0.0
+library(prettymapr) #v0.2.5
+library(caret) #v7.0.1
+library(mltools) #v0.3.5
+library(png) #v0.1.8
+library(vegan) #v2.6.4
+library(sf) #v1.0.14
+library(terra) #v1.8.29
+library(stringr) #v1.5.1
+library(factoextra) #v1.0.7.999
+library(vegan) #v2.6.4
+library(rnaturalearthhires) #v0.2.1
+library(gawdis) #v0.1.5
+library(NbClust) #v3.0.1
+library(raster) #v3.6.31
+library(fasterize) #v1.1.0
+```
+
+
+```{r}
+##Load objects 
+  
+#Ecoregions with trait and environment data, filtered from sampling bias (Script 01), and with corresponding colors code (Script 04)
+ecor_mod <- readRDS("../input_files/colors/ecoregions_colors.RDS")
+
+#Trait prevalences column names in ecoregion table
+traits <- c("bcspr", #Big colony size proportion
+            "pwppr", #Polymorphic workers proportion
+            "prspr") #Polygyne reproductive structure proportion
+
+# Objects for mapping
+#Graticules
+axRB <- readRDS( "../obj_for_figures/axis_robinson.RDS")
+#Sea
+seaRB <- readRDS("../obj_for_figures/sea_robinson.RDS")
+#Map background
+back <- rast("../obj_for_figures/back_continents.tif")
+#Coast
+coast <- rnaturalearthhires::coastline10
+coast <- st_transform(st_as_sf(coast), "+proj=robin +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+coast <- vect(coast)
+coast <- terra::intersect(coast, seaRB)
+
+#Ecoregions Polygons
+ecor_pol <- st_read("../input_files/ecoregions_polygons/Ecoregions_polygons.shp")
+
+#Raster version of ecoregions
+ecor_rast <- rast("../input_files/ecoregions_30sc.tif")
+
+#Occurrences
+occ <- read.table("", header = T, sep =",") #Replace the file with GABI_occ_Kass2022.csv from Kass et al. 2022 https://doi.org/10.1126/sciadv.abp9908
+occ$species <- str_replace_all(occ$valid_species_name, "[.]", "_")
+
+occ <- st_as_sf(occ, coords = c("lon_opt","lat_opt"), remove = F, crs = 4326)
+  #Extract ecoregions from occurrences
+  ant_by_ecor <- terra::extract( ecor_rast, st_coordinates(occ))
+  ant_by_ecor$sp <- occ$species
+  ant_by_ecor <- unique(ant_by_ecor[,c("sp", "ecoregions_30sc")])
+  colnames(ant_by_ecor) <- c("sp","ecor")
+
+#Traits
+tr <- read_xlsx("../input_files/social_traits.xlsx")
+
+ant_by_ecor <- merge(ant_by_ecor, tr[,c("sp", "cs","rs","wp")], by = "sp", all.x = TRUE, all.y = FALSE)
+ant_by_ecor$ecor <- paste0("e", ant_by_ecor$ecor)
+
+ant_by_ecor <- ant_by_ecor[!is.na(ant_by_ecor$ecor),]
+ant_by_ecor <- ant_by_ecor[rowSums(!is.na(ant_by_ecor[,c("cs", "rs", "wp")])) >0,  ]
+
+```
+
+```{r}
+#Identify the best number of clusters to discretise social compositions
+dist_t <- gawdis::gawdis(ecor_mod[,traits], w.type = "equal")
+
+#Silhouette
+nb_clus_s <- fviz_nbclust(
+  ecor_mod[,c("bcspr", "prspr", "pwppr")],
+  FUN = hcut,
+  method = c("silhouette"),
+  diss = dist_t,
+  k.max = 50)
+
+plot(nb_clus_s) #3
+
+#Gap statistic
+nb_clus_h <- fviz_nbclust(
+  ecor_mod[,c("bcspr", "prspr", "pwppr")],
+  FUN = hcut,
+  method = c("gap_stat"),
+  diss = dist_t,
+  k.max = 50)
+
+plot(nb_clus_h) #2
+
+#Elbow
+nb_clus_e <- NbClust(
+  ecor_mod[,c("bcspr", "prspr", "pwppr")],
+  method = "ward.D2",
+  index ="dindex",
+  distance = NULL,
+  diss = dist_t,
+  max.nc = 50) #3
+
+#Best number seems to be 3, we split our classification in 3 and create apriori names Tr(opical), Te(mperate), De(serts)
+ecor_mod$classif_socio <- factor(c("Tr", "Te", "De")[cutree(hclust(dist_t, method = "ward.D2"), 3)], levels = c("Tr", "Te", "De"))
+
+
+```
+
+```{r}
+###Boxplots of traits per cluster, test deviation from 0.5 to determine what trait are dominant in what social trait composition cluster
+par(mfrow = c(1,3))
+
+###Nest size
+wilcox.test(ecor_mod$bcspr[ecor_mod$classif_socio == "Tr"], mu = 0.5, alternative = "less") #Signif ***
+wilcox.test(ecor_mod$bcspr[ecor_mod$classif_socio == "Te"], mu = 0.5, alternative = "two.sided") #not signif
+wilcox.test(ecor_mod$bcspr[ecor_mod$classif_socio == "De"], mu = 0.5, alternative = "greater") #Signif *
+
+###Polymorphism
+wilcox.test(ecor_mod$pwppr[ecor_mod$classif_socio == "Tr"], mu = 0.5, alternative = "greater") #Signif ***
+wilcox.test(ecor_mod$pwppr[ecor_mod$classif_socio == "Te"], mu = 0.5, alternative = "less") #Signif ***
+wilcox.test(ecor_mod$pwppr[ecor_mod$classif_socio == "De"], mu = 0.5, alternative = "greater") #Signif ***
+
+###Polygyny
+wilcox.test(ecor_mod$prspr[ecor_mod$classif_socio == "Tr"], mu = 0.5, alternative = "less") #Signif ***
+wilcox.test(ecor_mod$prspr[ecor_mod$classif_socio == "Te"], mu = 0.5, alternative = "greater") #Signif ***
+wilcox.test(ecor_mod$prspr[ecor_mod$classif_socio == "De"], mu = 0.5, alternative = "greater") #Signif ***
+
+```
+
+
+
+```{r}
+#Get the best associations of biomes vs classif socio
+#Create a list
+soc_bio <- list()
+soc_cat <- c("Tr", "Te", "De")
+
+for(i in soc_cat)
+{
+  
+  print(paste0("Starting for ", i, " at ", Sys.time()))
+  
+  #Subset data.frame to get biomes with a list two regions in social classif
+  ubio <- ecor_mod$BIOME_NUM[!is.na(ecor_mod$classif_socio) & ecor_mod$classif_socio == i]
+  ubio <- unique(ubio[duplicated(ubio)])
+  
+    vbio_k <- c() #kappa
+    vbio_ac <- c() #accuracy
+    vbio_f1 <- c() #F1
+    vbio_mcc <- c() #Matthews coefficient
+    
+    datbio <- ecor_mod[, c("BIOME_NUM", "classif_socio")]
+    datbio$classif_socio <- as.character(datbio$classif_socio)
+    datbio$classif_socio[!is.na(datbio$classif_socio) & datbio$classif_socio == i] <- 1
+    datbio$classif_socio[!is.na(datbio$classif_socio) & datbio$classif_socio != 1] <- 0
+    
+    print(paste0("Found ", length(ubio), " biomes for ", i))
+    
+  for (j in 1:(length(ubio)-1))
+  {
+    print(paste0("Starting with combinations of ", j, " biomes for ", i))
+    
+  lbio <- combn(ubio, m =j) #Get all combinations
+  
+    prog <- progress::progress_bar$new(total = ncol(lbio),  format = " progress [:bar] :percent running for: :elapsed remaining: :eta")
+  
+  for(k in 1:ncol(lbio))
+  {
+    prog$tick()
+    
+    btab <- datbio
+    #Extract good biomes
+    rb <- lbio[,k]
+    btab$BIOME_NUM[is.na(btab$BIOME_NUM) | !btab$BIOME_NUM %in% rb] <- 0
+    btab$BIOME_NUM[btab$BIOME_NUM != 0] <- 1
+    
+    #Distance metric; jaccard similarity
+    bdis <- caret::confusionMatrix( reference = factor(btab[,"BIOME_NUM"]), data = factor(btab[,"classif_socio"]))
+    
+    vbio_k[paste(rb, collapse = ";")] <- as.numeric(bdis$overall["Kappa"])
+    vbio_ac[paste(rb, collapse = ";")] <- as.numeric(bdis$overall["Accuracy"])
+    vbio_f1[paste(rb, collapse = ";")] <- 2 * (bdis$byClass["Pos Pred Value"]  * bdis$byClass["Sensitivity"] ) / (bdis$byClass["Pos Pred Value"] +  bdis$byClass["Sensitivity"])
+    vbio_mcc[paste(rb, collapse = ";")] <- mcc(actuals = factor(btab[,"BIOME_NUM"]), pred = factor(btab[,"classif_socio"]))
+}
+  print(paste0("Done for combinations of ", j, " biomes for ", i))
+    
+      
+  }
+    soc_bio[[paste0(i,"_k")]] <- vbio_k
+    soc_bio[[paste0(i,"_ac")]] <- vbio_ac
+    soc_bio[[paste0(i,"_f1")]] <- vbio_f1
+    soc_bio[[paste0(i,"_mcc")]] <- vbio_mcc
+    
+    print(paste0("Done for ", i, " at ", Sys.time()))
+    
+  }
+  
+  
+saveRDS(soc_bio,"../outputs/all_match_metrics.RDS")
+
+```
+
+
+```{r}
+#To select for classifications, get the best percent of each metric
+
+soc_fper <- lapply(soc_bio, function(x){
+  vc <- sort(x, decreasing = T)
+  qt <- quantile(vc, seq(0,1,0.01))
+  vc <- vc[vc > rev(qt)[2]]
+})
+
+#Merge measures
+Tr_reg <- names(c(soc_fper[["Tr_ac"]], soc_fper[["Tr_k"]], soc_fper[["Tr_f1"]], soc_fper[["Tr_mcc"]]))
+Trl <- length(Tr_reg)
+Tr_reg <- str_split_1(paste(Tr_reg, collapse = ";"), ";")
+
+Te_reg <- names(c(soc_fper[["Te_ac"]], soc_fper[["Te_k"]], soc_fper[["Te_f1"]], soc_fper[["Te_mcc"]]))
+Tel <- length(Te_reg)
+Te_reg <- str_split_1(paste(Te_reg, collapse = ";"), ";")
+
+De_reg <- names(c(soc_fper[["De_ac"]], soc_fper[["De_k"]], soc_fper[["De_f1"]], soc_fper[["De_mcc"]]))
+Del <- length(De_reg)
+De_reg <- str_split_1(paste(De_reg, collapse = ";"), ";")
+
+#Select the ones that appear in at least 50% of the best 1% classifications
+table(Tr_reg)
+Tr_selec <- names(table(Tr_reg))[table(Tr_reg) > Trl/2]
+
+table(Te_reg)
+Te_selec <- names(table(Te_reg))[table(Te_reg) > Tel/2]
+
+table(De_reg)
+De_selec <- names(table(De_reg))[table(De_reg) > Del/2]
+
+#We assign Temperate conifer forests to Te as approx the same number of ecoregions but more surface in Te
+par(mfrow = c(1,1))
+barplot(table(ecor_mod$classif_socio[ecor_mod$BIOME_NAME == "Temperate Conifer Forests"]))
+surf_tcf <- aggregate(ecor_pol$SHAPE_AREA[ecor_mod$BIOME_NAME == "Temperate Conifer Forests"], by = list(ecor_mod$classif_socio[ecor_mod$BIOME_NAME == "Temperate Conifer Forests"]), FUN = "sum")
+De_selec <- De_selec[!De_selec %in% "5"]
+
+#Get names
+
+Tr_selec <- unique(ecor_mod$BIOME_NAME[ecor_mod$BIOME_NUM %in% as.numeric(Tr_selec)])
+Tr_reg <- ecor_mod$BIOME_NAME[match(as.numeric(Tr_reg), ecor_mod$BIOME_NUM)]
+
+Te_selec <- unique(ecor_mod$BIOME_NAME[ecor_mod$BIOME_NUM %in% as.numeric(Te_selec)])
+Te_reg <- ecor_mod$BIOME_NAME[match(as.numeric(Te_reg), ecor_mod$BIOME_NUM)]
+
+De_selec <- unique(ecor_mod$BIOME_NAME[ecor_mod$BIOME_NUM %in% as.numeric(De_selec)])
+De_reg <- ecor_mod$BIOME_NAME[match(as.numeric(De_reg), ecor_mod$BIOME_NUM)]
+
+#Confidence index for each biome in each classification
+
+freq_classif <- data.frame(biome = c(Tr_selec, De_selec, Te_selec), socio = c(rep("Tr", length(Tr_selec)), rep("De", length(De_selec)) , rep("Te", length(Te_selec))), freq = NA) 
+
+for(i in c("Tr_selec", "Te_selec", "De_selec"))
+{
+  
+  Bi_selec <- get(i)
+  Bi_metr <- get(str_replace_all(i, "selec", "reg"))
+  Bi_l <- get(str_replace_all(i, "_selec", "l"))
+  for(j in 1:length(Bi_selec))
+  {
+    Bi <- Bi_selec[j]
+    
+    biperc <- sum(Bi_metr %in% Bi)
+    bifreq <- biperc/Bi_l
+    print(paste0(Bi, " appears with a frequency of ", round(bifreq,3), " in match metrics classifications with ", str_remove(i, "_selec")))
+    
+    freq_classif$freq[freq_classif$biome == Bi] <- bifreq
+    
+  }
+}
+
+saveRDS(freq_classif,"../outputs/support_best_classif.RDS")
+
+
+```
+
+
+```{r}
+
+#Final biomes associations with social trait compositions, so we give them the same names
+ecor_mod$new_bio <- NA
+ecor_mod$new_bio[ecor_mod$BIOME_NUM %in% c(1,7,14,2,3)] <- "Tr"
+ecor_mod$new_bio[ecor_mod$BIOME_NUM %in% c(12,4,5,8,6 )] <- "Te"
+ecor_mod$new_bio[ecor_mod$BIOME_NUM %in% c(13,11,9 )] <- "De"
+
+#Add this data to the polygon df for mapping
+ecor_pol <- merge(ecor_pol, ecor_mod[,c("OBJECTID", "classif_socio",  "palette", "new_bio", "cols")], by = "OBJECTID")
+ecor_pol <- st_transform(ecor_pol, crs =crs(axRB))
+
+ecor_pol$new_bio <- factor(ecor_pol$new_bio, levels = c("Tr", "Te", "De"))
+ecor_pol$classif_socio <- factor(ecor_pol$classif_socio, levels = c("Tr", "Te", "De"))
+
+#Global accuracy of the classification we performed (contains all metrics)
+confmat <- caret::confusionMatrix(data = factor(ecor_mod$classif_socio,  levels = c("Tr", "Te", "De")), reference = factor(ecor_mod$new_bio,  levels = c("Tr", "Te", "De")))
+
+
+```
+
+
+```{r}
+##Count ecoregions and species per group and per biome (for maps)
+
+ct_sp_ec <- data.frame(group = soc_cat, species = NA, ec = NA)
+
+#Count ecoregions
+ct_sp_ec$ec <- c(table(ecor_mod$classif_socio)[ct_sp_ec$group])
+
+#Count species
+ant_by_ecor$soc_cat <- ecor_mod$classif_socio[match(ant_by_ecor$ecor, ecor_mod$id)]
+ant_by_ecor <- ant_by_ecor[!is.na(ant_by_ecor$soc_cat),]
+
+for(i in soc_cat)
+{
+  
+  ct_sp_ec$species[ct_sp_ec$group == i] <- length(unique(ant_by_ecor$sp[ant_by_ecor$soc_cat == i]))
+}
+
+ct_biec <- data.frame(group = soc_cat, ec = NA)
+#Count ecoregions
+ct_biec$ec <- c(table(ecor_mod$new_bio)[ct_biec$group])
+
+```
+
+
+
+```{r}
+##Save legend image to use it, otherwise it breaks the layout
+png(filename = "../obj_for_figures/congruence_leg.png", width = 650, height = 800)
+npal <- rev(paletteer::paletteer_c("grDevices::Purple-Blue", n = 5))
+
+plot.new()
+ fields::image.plot(
+  breaks = seq(0, 1, length.out = length(npal) + 1),
+  col = npal,
+  legend.only = T,
+  x = 0.1,
+  legend.cex = 1.7,
+  add = T,
+  graphics.reset = FALSE,
+  smallplot = c(0.05, .65, .08, .92),
+  axis.args=list( cex.axis = 9, lwd =9, lwd.ticks=9, hadj = -.4, tck = -0.13))
+ 
+ dev.off()
+```
+
+```{r}
+### Produce figure 2 
+
+#Layout matrix
+layout_matrix <- matrix(data = c(1,1,1,2,2,2,5,11,17,8,14,20,3,3,3,6,12,18,9,15,21,4,4,4,7,13,19,10,16,22), nrow = 10, ncol = 3, byrow = T)
+height_matrix <- c(.4,.4,2,1,.4,2,1,.4,2,1)
+width_matrix = c(1,1,1)
+
+soc_cat <- c("Tr", "De", "Te")
+bio_grn <- c("Tropical", "Desertic", "Temperate")
+
+#Palettes
+pal_ord <- ecor_pol[order(ecor_pol$palette), ]
+pal_ord <- pal_ord$cols[!duplicated(pal_ord$cols)]
+
+pal_bioord <- ecor_pol[order(ecor_pol$BIOME_NUM), ]
+pal_bioord <- pal_bioord$COLOR_BIO[!duplicated(pal_bioord$COLOR_BIO)]
+
+pdf(paste0("../outputs/fig_2.PDF"), width = 22.5, height = 20)
+
+# Set up the layout
+layout(layout_matrix, heights = height_matrix, widths = width_matrix)
+par(mar = c(0, 0, 0, 0), oma = c(0,0,0,0))
+
+#Main titles
+plot.new()
+text("Social Trait Compositions", pos = 4, x = 0, y =0.35, cex = 3.5, font = 2)
+text("Biomes", pos = 4, x = 0.35, y =0.35, cex = 3.5, font = 2)
+text("Congruence", pos = 4, x = 0.70, y =0.35, cex = 3.5, font = 2)
+
+
+#Subtitles
+for(i in 1:3)
+{
+  nbec <- ct_sp_ec$ec[ct_sp_ec$group == soc_cat[i]]
+  nbsp <- ct_sp_ec$species[ct_sp_ec$group == soc_cat[i]]
+  nbbec <- ct_biec$ec[ct_biec$group == soc_cat[i]]
+  nmatc <- nrow(ecor_mod[!is.na(ecor_mod$new_bio) & !is.na(ecor_mod$classif_socio)& ecor_mod$new_bio == soc_cat[i] & ecor_mod$classif_socio == soc_cat[i],])
+    
+  plot.new()
+  ##Compositions titles
+  text(x=0, y =0.5, pos =4, labels = paste0("Group ", i),cex = 3, font = 2)
+  text( x = 0.07,
+    y = 0.44,
+    pos = 4,
+    cex = 2,
+    labels = bquote("(n"[ecoregions] * "=" ~ .(nbec) * "; " * "n"[species] * "=" ~ .(nbsp) * ")"))
+  
+  #Biome titles
+  text(x=0.35, y =0.5, pos =4, labels = bio_grn[i],cex = 3, font = 2)
+  
+  xtxt <- 0.42
+  if(i == 3)
+  {
+    xtxt = 0.44
+  }
+    text( x = xtxt,
+    y = 0.44,
+    pos = 4,
+    cex = 2,
+    labels = bquote("(n"[ecoregions] * "=" ~ .(nbbec) * ")"))
+    
+    #Match titles
+      text(x=0.70, y =0.5, pos =4, labels = paste0("Group ", i, " x ",bio_grn[i]),cex = 3, font = 2)
+  
+  xtxt <- 0.85
+  if(i == 3)
+  {
+    xtxt = 0.87
+  }
+    text( x = xtxt,
+    y = 0.44,
+    pos = 4,
+    cex = 2,
+    labels = bquote("(n"[ecoregions] * "=" ~ .(nmatc) * ")"))
+    
+}
+
+#Social Compositions maps
+
+for(i in soc_cat)
+{
+  reg <- ecor_pol[ecor_pol$classif_socio == i,]
+  obj <- fasterize::fasterize(reg, raster::raster(back), field = "palette")
+  npal <- pal_ord[sort(unique(reg$palette))]
+
+terra::plot(seaRB, col = "aliceblue",  legend = FALSE, axes = FALSE, box = FALSE, mar = c(0.8,0.2,0.8,0.2), buffer = FALSE) 
+lines(axRB, col = "grey77",  bg = NULL, lwd = .15)
+terra::plot(back, col = "grey77", legend = FALSE, axes = FALSE, box = FALSE, add = TRUE)
+terra::plot(rast(obj),  col = npal, axes = FALSE, legend = FALSE, box = FALSE, add = TRUE)
+lines(coast, col = "grey19", lwd = 1)
+lines(seaRB, col = "black", lwd = 3)
+
+  
+}
+
+#Legends
+#Load pictures
+pict <- c("csize", "MinMaxBodySize", "Polygyny", "smsize", "monomorp", "monogyne")
+
+#Low colony size, High Polymorphism, low polygyny
+plot.new()
+xstr = 0.08
+ystr = 0.32
+for(q in c(4,2,6))
+{
+  trp <- readPNG( paste0("../obj_for_figures/",pict[q],".png"))
+  rasterImage(trp, xstr, ystr, xstr+0.24, ystr+0.65)
+  xstr <- xstr + 0.3
+}
+
+# text("-", cex = 6,  x = 0.12, y = 0.85, font = 2)
+text("Small\ncolony sizes", cex = 1.7, x = 0.22, y = 0.19)
+
+# text("+", cex = 6,  x = 0.42, y = 0.85, font = 2)
+text("Polymorphic\nworkers", cex = 1.7, x = 0.52, y = 0.19)
+
+# text("-", cex = 6,  x = 0.72, y = 0.85, font = 2)
+text("Monogynous\ncolonies", cex = 1.7, x = 0.82, y = 0.19)
+axis(1, lwd.ticks=0, lab=F, lwd=3)
+
+
+#High Polymorphism, High polygyny, High colony size
+plot.new()
+xstr = 0.08
+ystr = 0.32
+for(q in c(1,2,3))
+{
+  trp <- readPNG( paste0("../obj_for_figures/",pict[q],".png"))
+  rasterImage(trp, xstr, ystr, xstr+0.24, ystr+0.65)
+  xstr <- xstr + 0.3
+}
+
+# text("+", cex = 6,  x = 0.12, y = 0.85, font = 2)
+text("Large\ncolony sizes", cex = 1.7, x = 0.22, y = 0.19)
+
+# text("+", cex = 6,  x = 0.42, y = 0.85, font = 2)
+text("Polymorphic\nworkers", cex = 1.7, x = 0.52, y = 0.19)
+
+# text("+", cex = 6,  x = 0.72, y = 0.85, font = 2)
+text("Polygynous\ncolonies", cex = 1.7, x = 0.82, y = 0.19)
+
+ axis(1, lwd.ticks=0, lab=F, lwd=3)
+ 
+ #Low Polymorphism, High polygyny
+plot.new()
+xstr = 0.28
+ystr = 0.32
+for(q in c(5,3))
+{
+  trp <- readPNG( paste0("../obj_for_figures/",pict[q],".png"))
+  rasterImage(trp, xstr, ystr, xstr+0.24, ystr+0.65)
+  xstr <- xstr + 0.3
+}
+
+# text("-", cex = 6,  x = 0.32, y = 0.85, font = 2)
+text("Monomorphic\nworkers", cex = 1.7, x = 0.42, y = 0.19)
+
+# text("+", cex = 6,  x = 0.62, y = 0.85, font = 2)
+text("Polygynous\ncolonies", cex = 1.7, x = 0.72, y = 0.19)
+
+if(i != "Te")
+{
+axis(1, lwd.ticks=0, lab=F, lwd=3)
+}
+ 
+###Biomes maps
+  biopal <-ecor_pol$COLOR_BIO[order(ecor_pol$BIOME_NUM)][!duplicated(ecor_pol$COLOR_BIO[order(ecor_pol$BIOME_NUM)])]
+
+for(i in soc_cat)
+{
+  
+  reg <- ecor_pol[ecor_pol$new_bio == i,]
+
+  obj <- fasterize::fasterize(reg, raster::raster(back), field = "BIOME_NUM")
+  npal <- biopal[sort(unique(reg$BIOME_NUM))]
+
+terra::plot(seaRB, col = "aliceblue",  legend = FALSE, axes = FALSE, box = FALSE, mar = c(0.8,0.2,0.8,0.2), buffer = FALSE) 
+lines(axRB, col = "grey77",  bg = NULL, lwd = .15)
+terra::plot(back, col = "grey77", legend = FALSE, axes = FALSE, box = FALSE, add = TRUE)
+terra::plot(rast(obj),  col = npal, axes = FALSE, legend = FALSE, box = FALSE, add = TRUE)
+lines(coast, col = "grey19", lwd = 1)
+lines(seaRB, col = "black", lwd = 3)
+
+
+}
+  
+###Legends  
+for(i in soc_cat)
+{
+  
+  reg <- ecor_pol[ecor_pol$new_bio == i,]
+  reg <- reg[order(reg$BIOME_NUM),]
+  
+  #Remove mangroves as we do not see it on the map
+  reg <- reg[reg$BIOME_NAME != "Mangroves",]
+  
+  npal <- biopal[sort(unique(reg$BIOME_NUM))]
+  
+  bnames <- reg$BIOME_NAME[!duplicated(reg$BIOME_NAME)]
+  bnames <- bnames[!is.na(bnames)]
+  
+  plot.new()
+  xtxt <- 0.05
+  ystr <- 0.9
+  
+  npal <- npal[order(bnames)]
+  bnames <- bnames[order(bnames)]
+ 
+  
+  for(j in bnames)
+  {
+    perc <- round(freq_classif$freq[freq_classif$biome == j],2)
+    cnt <- which(bnames == j)
+    text(x = xtxt+0.1, y  =ystr, j, pos = 4,cex =1.6)
+    ystr <- ystr - 0.2
+    
+    rect(xleft = xtxt, xright = xtxt+0.08, ytop = ystr +0.28, ybottom = ystr+0.14, col = npal[cnt])
+  }
+  if(i != "Te")
+{
+axis(1, lwd.ticks=0, lab=F, lwd=3)
+}
+
+}
+  
+####Match of the two maps  
+  #Get support metric
+  ecor_pol$support <- as.numeric(freq_classif$freq[match( ecor_pol$BIOME_NAME, freq_classif$biome)])
+  ecor_pol$dummy <- 1
+  
+for(i in soc_cat)
+{
+  
+  reg <- ecor_pol[ecor_pol$new_bio == i & ecor_pol$classif_socio == i,]
+  
+  reg2 <- ecor_pol[ecor_pol$new_bio == i & ecor_pol$classif_socio != i,]
+  
+  reg3 <- ecor_pol[ecor_pol$new_bio != i & ecor_pol$classif_socio == i,]
+  
+  regn <- rbind(reg2,reg3)
+
+  obj <- fasterize::fasterize(reg, raster::raster(back), field = "support")
+  obj2 <- fasterize::fasterize(regn, raster::raster(back), field = "dummy")
+  
+  npal <- rev(paletteer::paletteer_c("grDevices::Purple-Blue", n = 5))
+  col2 <- npal[1]
+    
+    
+terra::plot(seaRB, col = "aliceblue",  legend = FALSE, axes = FALSE, box = FALSE, mar = c(0.8,0.2,0.8,0.2), buffer = FALSE) 
+lines(axRB, col = "grey77",  bg = NULL, lwd = .15)
+terra::plot(back, col = "grey77", legend = FALSE, axes = FALSE, box = FALSE, add = TRUE)
+terra::plot(rast(obj),  col = npal, axes = FALSE, legend = FALSE, box = FALSE, add = TRUE, range = c(0,1), type = "continuous")
+terra::plot(rast(obj2),  col = col2, axes = FALSE, legend = FALSE, box = FALSE, add = TRUE, range = c(1,1))
+lines(coast, col = "grey19", lwd = 1)
+lines(seaRB, col = "black", lwd = 3)
+
+}
+  
+  cgl <- readPNG(paste0("../obj_for_figures/congruence_leg.png"))
+##Legend  with match metrics
+  for(i in soc_cat)
+{
+    
+  plot.new()
+  
+  rect(xleft = 0.35, xright = 0.43, ytop = .97, ybottom = 0.83, col = col2)
+  text(x = 0.45, y= 0.9, "Non matching ecoregions", cex =1.6, pos =4)  
+    
+  xtxt <- 0.05
+  ystr <- 0.9
+  
+  text(x = 0.05, y= 0.9, bquote("Support (S"["1%"]*")"), cex =2.2, pos =4)
+  
+    ystr <- 0.55
+  cotxt1 <- paste0("Balanced Accuracy = ",round(confmat$byClass[paste0("Class: ",i),"Balanced Accuracy"], 2))
+  cotxt2 <- paste0("F1 = ",round(confmat$byClass[paste0("Class: ",i),"F1"], 2))
+  text(cotxt1, x = 0.34, y = ystr, pos = 4, cex  = 2.5)
+    ystr <- ystr-0.25
+  
+  text(cotxt2, x = 0.34, y = ystr, pos = 4, cex  = 2.5)
+  
+  rasterImage(cgl, xleft= 0.06, xright = 0.19, ybottom = 0.08, ytop =0.85)
+
+  if(i != "Te")
+{
+axis(1, lwd.ticks=0, lab=F, lwd=3)
+}
+}
+
+ dev.off() 
+  
+```

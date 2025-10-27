@@ -1,0 +1,251 @@
+---
+title: "02_Phylo_spatial_eigenvectors"
+author: "Eddie Pérochon"
+date: "2025-01-06"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+##### Script O2: Phylogenetic and Spatial eigen vectors #####
+
+###################################################
+#      Authors: Eddie Pérochon                    #
+#      Contact: eddie.perochon@hotmail.com        #
+###################################################
+
+### Goals = 
+##### Get eigen vectors that will allow us to account for spatial and phylogenetic autocorrelation #####
+
+# Build a matrice of assemblages phylogenetic distances
+# Compute Moran's Eigen vector maps and Phylogenetic eigen vector maps
+
+### Inputs 
+# Neighborhood matrix of ecoregions
+# Ant species trait data
+# Ant species occurrence dataset (Kass et al. 2022; https://doi.org/10.1126/sciadv.abp9908)
+# Ant species incidence matrix by ecoregion
+# Ant species phylogenetic relationships (Economo et al. 2018; https://doi.org/10.1038/S41467-018-04218-4 )
+###
+
+### Outputs
+
+# Matrix of phylogenetic distances between assemblages of each ecoregion
+# Spatial and phylogenetic eigen vectors of our dataset, to account for autocorrelation
+
+###
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+#Packages
+library(sf) #v1.0.14
+library(spdep) #v1.3.6
+library(terra) #v1.8.29
+library(stringr) #v1.5.1
+library(ape) #v5.8
+library(tidyverse) #v2.0.0
+library(iNEXT) #v3.0.1
+library(picante) #v1.8.2
+library(parallel) #v4.2.2
+library(ade4) #v1.7.22
+library(iNEXT) #v3.0.1
+library(adiv) #v2.2.1
+library(adespatial) #v0.3.24
+library(phytools) #v2.4.4
+library(geosphere) #v1.5.18
+library(readxl) #v1.4.3
+library(adephylo) #v1.1.16
+
+```
+
+```{r}
+#Load objects
+
+#Ecoregions with trait and environment data, filtered from sampling bias
+ecor <- readRDS("../input_files/ecoregions_for_analysis.RDS")
+
+#Ecoregions neighborhood matrix,computed with poly2nb() from ecoregions polygons
+load("../input_files/neighbor_matrix.RDATA")
+
+#Ecoregions raster at 30sc resolution for faster extraction from coordinates
+ecor_rast <- rast("../input_files/ecoregions_30sc.tif")
+
+#Create a spatial distance matrix from ecoregion centroids
+spa_dist <- distm(x = st_coordinates(centr), y = st_coordinates(centr), fun = geosphere::distHaversine) 
+colnames(spa_dist) <- row.names(spa_dist) <- paste0("e", centr$OBJECTID)
+
+#Normalize distances
+spa_dissim <- (spa_dist - min(spa_dist)) / (max(spa_dist) - min(spa_dist))
+
+#Occurrences
+occ<- read.table("", header = T, sep =",") #Replace the file with GABI_occ_Kass2022.csv from Kass et al. 2022 https://doi.org/10.1126/sciadv.abp9908
+occ$species <- str_replace_all(occ$valid_species_name, "[.]", "_")
+
+#Traits
+tr <- read_xlsx("../input_files/social_traits.xlsx")
+
+#Transform in spatial object
+occ <- st_as_sf(occ, coords = c("lon_opt","lat_opt"), remove = F, crs = 4326)
+
+  #Extract ecoregions from occurrences
+  ant_by_ecor <- terra::extract( ecor_rast, st_coordinates(occ))
+  ant_by_ecor$sp <- occ$species
+  ant_by_ecor <- unique(ant_by_ecor[,c("sp", "ecoregions_30sc")])
+  colnames(ant_by_ecor) <- c("sp","ecor")
+  
+traits <- c("cs", "rs", "wp")
+ant_by_ecor <- merge(ant_by_ecor, tr[,c("sp", "cs","rs","wp")], by = "sp", all.x = TRUE, all.y = FALSE)
+ant_by_ecor$ecor <- paste0("e", ant_by_ecor$ecor)
+ant_by_ecor <- ant_by_ecor[!is.na(ant_by_ecor$ecor),]
+  
+#Phylogeny, derived from Economo et al. 2018; https://doi.org/10.1038/S41467-018-04218-4 
+
+phy <- read.tree("") #replace the file with the first 15K_FBD_crown_mcc tree from the paper
+phy$tip.label <- str_replace_all(phy$tip.label, "[.]", "_")
+
+#Incidence matrix by ecoregion
+s.spri <- readRDS("../input_files/ecoregions_incidences.RDS")
+
+#Remove species that are not in the phylogeny
+s.spri_phy <- s.spri
+for(i in names(s.spri_phy))
+{
+  s.spri_phy[[i]] <- s.spri_phy[[i]][row.names(s.spri_phy[[i]]) %in% phy$tip.label,]
+}
+
+```
+
+
+```{r}
+## Compute phylogenetic distances
+
+#Matrice list to store information
+ecor_diss <- list()
+
+btlvl <- c("glob", "cs", "wp", "rs")
+
+### Compute phylogenetic beta similarity between ecoregions, for global, and each trait
+
+num_cores <- detectCores() - 5
+cl <- makeCluster(num_cores)
+
+#Filter out species that are not in the phylogeny
+ant_by_ecor_phy <- ant_by_ecor[ant_by_ecor$sp %in% phy$tip.label,]
+
+for(i in btlvl)
+{
+   s.spri_phy_sb <- s.spri_phy
+  if( i == "glob")
+  {
+    print(paste0("Starting at ", Sys.time()))
+    spec <- unique(ant_by_ecor_phy$sp)
+    
+  } else {
+    spec <- unique(ant_by_ecor_phy$sp[!is.na(ant_by_ecor_phy[,i])])
+    
+    #Remove species without trait data
+    for(j in names(s.spri_phy_sb))
+    {
+    s.spri_phy_sb[[j]] <- s.spri_phy_sb[[j]][row.names(s.spri_phy_sb[[j]]) %in% spec,]
+    }
+    #Remove ecoregions without species
+    s.spri_phy_sb <- s.spri_phy_sb[unlist(lapply(X = s.spri_phy_sb, FUN = nrow)) > 0]
+    
+  }
+  
+  
+   # Nommes les lignes et colonnes de la matrice de dissimilarité
+   region_names <- names(s.spri_phy_sb)
+   mat <- matrix(nrow = length(region_names), ncol = length(region_names))
+   row.names(mat) <- colnames(mat) <- region_names
+
+   print(paste0("Starting computing distances for ", i, " at ", Sys.time()))
+
+   # Row parallelization
+   # Get necessary objects for clustering
+    clusterExport(cl, varlist = c("s.spri_phy_sb", "phy", "ant_by_ecor_phy", "evodiss", "region_names", "mat", "drop.tip"))
+   
+   mat_list <- parLapply(cl, region_names, function(k) {
+     
+      row_result <- numeric(length(region_names))
+      names(row_result) <- region_names
+      
+      for(l in region_names) {
+         if(k == l) {
+            row_result[l] <- 0
+         } else {
+            sb_spe <- unique(c(row.names(s.spri_phy_sb[[k]]), row.names(s.spri_phy_sb[[l]])))
+            sb_phy <- drop.tip(phy, phy$tip.label[!phy$tip.label %in% sb_spe])
+
+            tab <- matrix(nrow = 2, ncol = length(sb_spe), data = 0)
+            row.names(tab) <- c(k, l)
+            colnames(tab) <- sb_spe
+            tab[k, colnames(tab) %in% row.names(s.spri_phy_sb[[k]])] <- 1
+            tab[l, colnames(tab) %in% row.names(s.spri_phy_sb[[l]])] <- 1
+
+            diss <- tryCatch({ evodiss(phyl = sb_phy, comm = tab, method = "Hill", q = 0)
+            }, error = function(e) {
+    NA  #NA when errors
+          })
+            row_result[l] <- as.numeric(diss)
+         }
+      }
+      return(row_result)
+   })
+
+   # List to matrix
+   mat <- do.call(rbind, mat_list)
+  
+  ecor_diss[[i]] <- mat
+  
+    print(paste0("Done computing distances for ",i," at ", Sys.time()))
+    saveRDS(ecor_diss, "../outputs/phy_diss.RDS")
+
+}
+    stopCluster(cl)
+
+```
+ 
+ 
+```{r}
+## Generate spatial and phylogenetic eigen vectors
+#Load phylogenetic assemblage distance matrix
+phy_diss <- readRDS("../outputs/phy_diss.RDS")
+
+mat_spa <- spa_dist
+
+#Filter ecoregions that are not in the dataset and empty columns/rows
+mat_phy <- phy_diss[[1]]
+      row.names(mat_phy) <- colnames(mat_phy)
+      mat_phy <- mat_phy[!colSums(is.na(mat_phy)) == ncol(mat_phy)-1, !rowSums(is.na(mat_phy)) == nrow(mat_phy)-1]
+      mat_phy <- mat_phy[colSums(is.na(mat_phy)) < 1, rowSums(is.na(mat_phy)) < 1]
+      
+      mat_spa <- mat_spa[row.names(mat_phy), colnames(mat_phy)]
+    
+      mat_spa <- mat_spa[row.names(mat_spa) %in% ecor_mod$id, colnames(mat_spa) %in% ecor_mod$id]
+      mat_phy <- mat_phy[row.names(mat_phy) %in% ecor_mod$id, colnames(mat_phy) %in% ecor_mod$id]
+    
+
+#Spatial eigen vectors
+eigenvec_s <- dbmem(as.dist(mat_spa))
+
+#Phylogenetic eigenvectors
+#Transform distance in a "phylogenetic tree-like" hierarchical structure
+phy_tre <- as.phylo(hclust(d = as.dist(mat_phy), method  = "average"))
+
+eigenvec_p <- orthobasis.phylo(phy_tre)
+names(eigenvec_p) <-paste0("PE", 1:ncol(eigenvec_p))
+
+save(list = c("eigenvec_s", "eigenvec_p"), file ="../outputs/MEM_PEM_fullset.RDATA")
+
+
+```
+ 
+ 
+ 

@@ -1,0 +1,416 @@
+---
+title: "Estimate_sampling_bias"
+author: "Eddie Pérochon"
+date: "2024-12-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##### Script O1: Sampling bias estimation #####
+
+###################################################
+#      Authors: Eddie Pérochon                    #
+#      Contact: eddie.perochon@hotmail.com        #
+###################################################
+
+
+### Goals = 
+##### Evaluate sampling bias in ecoregions (from the occurrence dataset) compared to political regions #####
+
+# Computes 4 criteria to evaluate sampling in political regions
+# Discard political regions that does not meet the 4 criteria
+# Intersect with ecoregions, keep those which are covered by political regions on at least 50% of their surface
+
+### Inputs 
+# Ecoregions polygons (Dinerstein et al. 2017; https://doi.org/10.1093/biosci/bix014)
+# Ant species occurrence dataset (Kass et al. 2022; https://doi.org/10.1126/sciadv.abp9908)
+# Ant species presence by political region (GABI, Guénard et al. 2017; https://doi.org/10.25849/myrmecol.news_024:083 )
+# Ant genus phylogenetic relationships (Economo et al. 2018; https://doi.org/10.1038/S41467-018-04218-4 )
+###
+
+### Outputs
+
+# Subset of well sampled political regions
+# Subset of well sampled ecoregions
+
+###
+
+
+```{r}
+rm(list = ls())
+```
+
+
+```{r}
+library(sf) #v1.0.14
+library(spdep) #v1.3.6
+library(terra) #v1.8.29
+library(stringr) #v1.5.1
+library(ape) #v5.8
+library(tidyverse) #v2.0.0
+library(iNEXT) #v3.0.1
+library(picante) #v1.8.2
+library(FactoMineR) #v2.11
+```
+
+```{r}
+##Load occurrences and political regions
+
+#Occurrence dataset
+occ <- read.table("", header = T, sep =",") #Replace the file with GABI_occ_Kass2022.csv from Kass et al. 2022 https://doi.org/10.1126/sciadv.abp9908
+
+#Recalibrate species names
+occ$species <- str_replace_all(occ$valid_species_name, "[.]", "_")
+
+#Transform to spatial object
+occ <- st_as_sf(occ, coords = c("lon_opt","lat_opt"), remove = F, crs = 4326)
+occ <- st_transform(occ, crs = 8857)
+
+#Geometries of political regions
+load("../input_files/geom_bentity.RDATA") 
+bent <- geom  
+rm(list = c("geom", "geom_is", "geom_main"))
+  
+bent <- st_transform(bent, crs = 8857) #Equal earth projection
+bent <- st_make_valid(bent) # Solve polygon problems
+bent$AREA <- st_area(bent) #get political region area 
+
+#Presence in political regions from GABI
+load() #From GABI, https://doi.org/10.25849/myrmecol.news_024:083 
+
+#Object to store the polytical regions splits
+s.polysplit <- list()
+s.spri <- list()
+
+not_cutted <-c()
+
+##Genus level phylogeny, derived from Economo et al. 2018; https://doi.org/10.1038/S41467-018-04218-4 
+phy_gen <- ("../input_files/genus_phylogeny.RDS")
+phy_gen <- drop.tip(phy_gen, phy_gen$tip.label[ !phy_gen$tip.label %in% bent_pres$genus])
+
+#Ecoregions polygons, from Dinerstein et al. 2017; https://doi.org/10.1093/biosci/bix014
+ecor <- st_read("../input_files/ecoregions_polygons/Ecoregions_polygons.shp") 
+ecor <- st_transform(ecor, crs = crs(keep_bent))
+
+```
+
+```{r}
+#Cut political regions in pieces of 1000km²
+
+ for(i in 1:nrow(bent))
+{
+   if(i == 1)
+   {
+     print(paste0("Starting at ", Sys.time()))
+   }
+   
+   
+  bn <- bent$BEN[i]
+  
+  if(!bn %in% names(s.spri))
+  {
+    
+  #extract polygon
+  spvc <- bent[bent$BEN == bn,]
+  
+  #Get the number of cuts
+  nb_cut <- as.numeric(spvc$AREA%/%1000)
+  
+  if(as.numeric(spvc$AREA) < 10000) #If the whole area is less than 10000km², we just split political region in 10 equal pieces
+  {
+    nb_cut <- 10
+  }
+  #Sometimes splitting fails and we try it again
+    prev_cut <- 0
+    cut <- 0
+
+  cnt <- 0
+  
+  while(length(prev_cut) == length(cut) && cnt < 11)
+  {
+    if(cnt > 0)
+    {
+      print(paste0("no convergence, trying it again at ", bn))
+    }
+  tryCatch(
+    cut <- predicts::divider(vect(spvc$geometry), n = nb_cut, iter.max = 1000)
+           
+           ,error=function(x) {
+
+                 print(paste0("geometry problem at ", bn))
+
+           })
+    cnt <- cnt+1
+  }
+  if(cnt == 11)
+  {
+    print(paste0("No convergence found after 10 try for ", bn))
+    cut <- NA
+    not_cutted <- c(not_cutted, bn)
+    
+    next
+  }
+   s.polysplit[[bn]] <- cut
+  
+  antsub <- occ
+  antsub$subdiv <- terra::extract(x = cut, y = st_coordinates(occ))[,2]
+  antsub <- antsub[!is.na(antsub$subdiv), ]
+  
+  if(nrow(antsub) == 0) #Sometimes occurrences are at the border but not into
+  {
+    next
+  }
+  
+  antsub$subdiv <- paste0("s", antsub$subdiv)
+  
+  antsub<-unique(antsub[,c("species","subdiv")])
+  antsub$subdiv <- factor(antsub$subdiv, levels = paste0("s",c(1:length(cut))))
+  
+  #Enter data in lists
+  
+  s.spri[[bn]] <- dplyr::mutate_all(as.data.frame.matrix(table(antsub$species, antsub$subdiv)> 0), function(x)as.numeric(x))
+  }
+  if(i %% 5 == 0)
+  {print(paste0("Done for ", i," out of ", nrow(bent)," at ", Sys.time()))
+        
+        save(list = c("s.spri", "s.polysplit"), file = "./outputs/incid_matrix_bentit.RDATA")
+        
+        }
+}
+ 
+
+save(list = c("s.spri", "s.polysplit"), file = "./outputs/incid_matrix_bentit.RDATA")
+  
+
+```
+
+
+
+```{r}
+#Estimate species richness dif, number of cell covered and phylogenetic coverage at genus level of occ vs political regions
+
+#Load objects
+
+load("../outputs/incid_matrix_bentit.RDATA")
+
+#Objects with presence data coming from GABI
+colnames(presabs_global_nat_wong) <- str_replace_all(colnames(presabs_global_nat_wong), "[.]", "_")
+
+#transform ssp to sp
+occ$species[str_detect(occ$species, " ")] <- str_split_fixed(occ$species[str_detect(occ$species, " ")], " ", n = 2)[,1]
+
+bent_pres <- which(presabs_global_nat_wong == 1, arr.ind = T)
+bent_pres <-  data.frame(BEN = row.names(presabs_global_nat_wong)[bent_pres[, 1]],
+                        species = colnames(presabs_global_nat_wong)[bent_pres[, 2]])
+
+bent_pres$genus <- str_split_fixed(bent_pres$species, "_", n = 2)[,1]
+
+```
+
+
+```{r}
+
+#Initiate new columns
+bent$spri.obs <- bent$spri.es <- bent$perc.samp <- bent$benfd <- bent$occfd <- bent$phylogen.cov <- bent$ncell  <- bent$cellsamp <- bent$spri.difperc <- bent$spri.occ <- bent$spri.qd <- bent$spri.difqd <-bent$sp.qdcov <- NA
+
+vbent <- vect(bent$geometry)
+
+#Extract the political region of each occurrence
+bo <- terra::extract(x = vbent, y = st_coordinates(occ))
+#duplicate occurrence that fall in two political regions
+occ <- occ[bo[,1],]
+
+occ$BEN <- bent$BEN[bo[,2]]
+
+occ$genus <- str_split_fixed(occ$species, "_", n = 2)[,1]
+occ <- occ[!is.na(occ$BEN),]
+
+#Add missing species to political regions
+spmis <- unique(st_drop_geometry(occ[,c("BEN", "species", "genus")]))
+#Filter occ in that are not counted in political regions
+
+bent_pres <- unique(rbind(bent_pres, spmis))
+
+##Remove Colombia and India that are present as polygons and also as subdivisions
+bent <- bent[lengths(st_contains(bent))<2,]
+
+```
+
+
+
+
+```{r}
+##Loop to estimate coverages, sampling and species richness diff for each political region
+
+for(i in 1:nrow(bent))
+{
+  if(i == 1)
+  {
+    print(paste0("Starting at ", Sys.time()))
+  }
+  
+  bn <- bent$BEN[i]
+  
+  bent$spri.obs[i] <- length(unique(bent_pres$species[bent_pres$BEN == bn]))
+  
+  if(bent$spri.obs[i] > 0)
+  {
+  gen.ben <- unique(bent_pres$genus[bent_pres$BEN == bn])
+  
+  gen.ben <- gen.ben[gen.ben %in% phy_gen$tip.label]
+  
+  #Quantify coverage phylo
+  gen.occ <- unique(occ$genus[occ$BEN == bn])
+  gen.occ <- gen.occ[gen.occ %in% phy_gen$tip.label]
+  
+  mat_fd <- matrix(ncol = length(unique(c(gen.occ, gen.ben))), nrow = 2, data = 0)
+  colnames(mat_fd) <- unique(c(gen.occ, gen.ben))
+  row.names(mat_fd) <- c("ben", "occ")
+  
+  mat_fd["ben",][colnames(mat_fd) %in% gen.ben] <- 1
+  
+  if(length(gen.occ) == 1 && is.na(gen.occ))
+  {
+    mat_fd["occ",] <- 0
+  } else {
+    mat_fd["occ",][colnames(mat_fd) %in% gen.occ] <- 1
+    
+  }
+  fd <- picante::pd(samp = mat_fd, tree = phy_gen, include.root = TRUE)
+  
+  bent$benfd[i] <- fd["ben", "PD"]
+  bent$occfd[i] <- fd["occ", "PD"]
+
+  
+  bent$phylogen.cov[i] <-  bent$occfd[i]/(bent$benfd[i])
+  
+  if(bn %in% names(s.polysplit))
+  {
+    
+    ##Quantify how many cells have been sampled
+    mat <- s.spri[[bn]]
+    
+    if(length(mat) == 0) #Case with splits but no species
+    {
+    bent$ncell[i] <- (bent$AREA[i]%/%1000)
+    bent$cellsamp[i] <- 0
+    bent$perc.samp[i] <- 0
+    } else {
+    
+    bent$ncell[i] <- ncol(mat)
+    bent$cellsamp[i] <- sum(colSums(mat)>0)
+    bent$perc.samp[i] <- bent$cellsamp[i]/bent$ncell[i]
+    }
+    
+    ##Chao estimation
+    if(bn %in% names(s.spri))
+    {
+     tryCatch(
+       chao <-  iNEXT(list(mat), q = 0, datatype = "incidence_raw")
+         ,error = function(x) {
+                      print(paste0("chao failled at ", bn)) 
+           chao <<- NA
+           
+         })
+    
+         if(!(length(chao) == 1 && is.na(chao)))
+         {
+           #Species richnesses
+         bent$spri.occ[i] <- sum(rowSums(mat)>0) #Of occurrences
+         bent$spri.es[i] <- chao$AsyEst[,"Estimator"][chao$AsyEst[,"Diversity"] == "Species richness"] #Estimated with chao
+         bent$spri.difperc[i] <- abs((1 -(bent$spri.es[i]/bent$spri.obs[i]))) #Diff chao/political region
+         bent$spri.qd[i] <-rev(chao$iNextEst$size_based$qD)[1]
+         bent$spri.difqd[i] <- abs((1 -(bent$spri.qd[i]/bent$spri.obs[i]))) #Diff chao/political
+         bent$sp.qdcov[i] <- chao$DataInfo$SC
+   
+         }     
+      }
+  }
+  
+  }
+  print(paste0("Done for ",bn," ",i,"/",nrow(bent)," at ",Sys.time()))
+}
+
+bent$dif.occobs <- abs((1-(bent$spri.occ/bent$spri.obs)))
+
+
+#Compute beta similarity
+for(i in 1:nrow(bent))
+{
+  bn <- bent$BEN[i]
+  sp_ben <- bent_pres$species[bent_pres$BEN == bn]
+  sp_ben <- str_replace_all(sp_ben, " ", "_")
+  sp_occ <- unique(occ$species[occ$BEN == bn])
+  if(length(sp_ben) != 0 | length(sp_occ) != 0)
+  {
+  mat <- matrix(nrow = 2, ncol = length(unique(c(sp_ben, sp_occ))), data = 0)
+  colnames(mat) <- unique(c(sp_ben, sp_occ))
+  mat[1, colnames(mat) %in% sp_ben] <- 1
+  mat[2, colnames(mat) %in% sp_occ] <- 1 
+  
+  if(ncol(mat)>1)
+  {
+  div <- adiv::betastatjac(mat)
+bent$betasim[i] <- div["sim"] 
+}
+}
+}
+save(bent, file = "../outputs/sampling_bias_bentity.RDATA")
+
+```
+
+```{r}
+#4 Filters of quality
+
+#Sampling at least 1% of the surface
+#Phylogenetic genus coverage at least 80%
+#Taxonomic beta similarity at least 60%
+#Species richness occ vs political region differences = 20% or less or >= 60% coverage chao
+
+load("./outputs/diversity_patterns/richness_simulations/sampling_bias_bentity.RDATA")
+
+keep_bent <- bent[bent$dif.occobs <= 0.2 | bent$sp.qdcov >= 0.6 ,]
+keep_bent <- keep_bent[keep_bent$perc.samp >= 0.01 & keep_bent$phylogen.cov >= 0.8 & keep_bent$betasim >= 0.6,]
+keep_bent <- keep_bent[!is.na(keep_bent$spri.occ),]
+
+save(list = c("bent", "keep_bent"), file = "../outputs/sampling_bias_bentity.RDATA")
+```
+
+
+
+```{r}
+#Intersect ecoregions with well sampled regions
+
+intse <- st_intersects(ecor, keep_bent)
+ecor$intse <- lengths(intse) > 0
+
+ecor_i <- ecor[lengths(intse) > 0,]
+
+#Area check
+ecor_i$area50 <- NA
+
+for(i in ecor_i$OBJECTID)
+{
+  pol <- ecor_i[ecor_i$OBJECTID == i,]
+  pol <- st_make_valid(pol)
+  interesct <- st_intersection(pol, keep_bent)
+  cover <- as.numeric(sum(st_area(interesct))/st_area(pol))
+  
+  ecor_i$area50[ecor_i$OBJECTID == i] <- cover
+  
+}
+ 
+#Keep only regions covered on at least 50% of their surface by well sampled political regions
+ecor50 <- ecor_i[ecor_i$area50 >= 0.5, ]
+
+plot(bent$geometry); polys(ecor50, col = "darkgreen")
+
+#Save the final object
+save(ecor50, file = c("../outputs/sampling_bias_ecoregions.RDATA"))
+
+```
+
+
