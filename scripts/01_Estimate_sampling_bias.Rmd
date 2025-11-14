@@ -87,7 +87,7 @@ s.spri <- list()
 
 not_cutted <-c()
 
-##Genus level phylogeny, derived from Economo et al. 2018; https://doi.org/10.1038/S41467-018-04218-4 
+##Genus level phylogeny, derived from Economo et al. 2018  15K_FBD_crown_mcc tree; https://doi.org/10.1038/S41467-018-04218-4 
 phy_gen <- ("../input_files/genus_phylogeny.RDS")
 phy_gen <- drop.tip(phy_gen, phy_gen$tip.label[ !phy_gen$tip.label %in% bent_pres$genus])
 
@@ -370,7 +370,7 @@ save(bent, file = "../outputs/sampling_bias_bentity.RDATA")
 #Taxonomic beta similarity at least 60%
 #Species richness occ vs political region differences = 20% or less or >= 60% coverage chao
 
-load("./outputs/diversity_patterns/richness_simulations/sampling_bias_bentity.RDATA")
+load("./outputs/sampling_bias_bentity.RDATA")
 
 keep_bent <- bent[bent$dif.occobs <= 0.2 | bent$sp.qdcov >= 0.6 ,]
 keep_bent <- keep_bent[keep_bent$perc.samp >= 0.01 & keep_bent$phylogen.cov >= 0.8 & keep_bent$betasim >= 0.6,]
