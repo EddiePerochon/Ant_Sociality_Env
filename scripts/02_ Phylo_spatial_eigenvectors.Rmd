@@ -106,7 +106,7 @@ ant_by_ecor <- ant_by_ecor[!is.na(ant_by_ecor$ecor),]
   
 #Phylogeny, derived from Economo et al. 2018; https://doi.org/10.1038/S41467-018-04218-4 
 
-phy <- read.tree("") #replace the file with the first 15K_FBD_crown_mcc tree from the paper
+phy <- read.tree("") #replace the file with the 15K_FBD_crown_mcc tree from the paper
 phy$tip.label <- str_replace_all(phy$tip.label, "[.]", "_")
 
 #Incidence matrix by ecoregion

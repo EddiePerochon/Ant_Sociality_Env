@@ -126,7 +126,6 @@ dist_tab <- gawdis::gawdis(ecor_mod[,traits], w.type = "equal")
 
 #Hierarchical clustering with wardD2
 tr_clu <- hclust(dist_tab, method = "ward.D2")
-
 plot(as.dendrogram(tr_clu))
 
 
@@ -227,6 +226,14 @@ site <- vegan::scores(tr_rda, display="sites", choices=c(1,2), scaling=1)
 
 #Significance tests
 anov <- anova.cca(tr_rda, step = 10000, by = "margin")
+
+#Effect sizes: partial R² for each significant factor
+seaso.var <- varpart(X, Z[,"sSeaso"], Z[, !colnames(Z) %in% "sSeaso"])
+seaso.var$part
+
+temp.var <- varpart(X, Z[,"sTemp"], Z[, !colnames(Z) %in% "sTemp"])
+temp.var$part
+
 
 ```
 

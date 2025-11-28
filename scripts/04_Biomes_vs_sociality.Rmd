@@ -154,7 +154,7 @@ ecor_mod$classif_socio <- factor(c("Tr", "Te", "De")[cutree(hclust(dist_t, metho
 ```
 
 ```{r}
-###Boxplots of traits per cluster, test deviation from 0.5 to determine what trait are dominant in what social trait composition cluster
+###Test deviation from 0.5 to determine what trait are dominant in what social trait composition cluster
 par(mfrow = c(1,3))
 
 ###Nest size

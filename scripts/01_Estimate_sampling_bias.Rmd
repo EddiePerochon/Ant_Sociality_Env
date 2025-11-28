@@ -88,7 +88,7 @@ s.spri <- list()
 not_cutted <-c()
 
 ##Genus level phylogeny, derived from Economo et al. 2018  15K_FBD_crown_mcc tree; https://doi.org/10.1038/S41467-018-04218-4 
-phy_gen <- ("../input_files/genus_phylogeny.RDS")
+phy_gen <- readRDS("../input_files/genus_phylogeny.RDS")
 phy_gen <- drop.tip(phy_gen, phy_gen$tip.label[ !phy_gen$tip.label %in% bent_pres$genus])
 
 #Ecoregions polygons, from Dinerstein et al. 2017; https://doi.org/10.1093/biosci/bix014
