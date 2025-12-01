@@ -2,7 +2,7 @@
 
 This repository contains the code and data used to carry out analyses for this research article:
 
-__Pérochon et al., 2025 - Environmental conditions shape the global distribution of ant sociality. in prep.__ 
+__Pérochon et al., 2025 - Environmental conditions shape the global distribution of ant societies. in prep.__ 
 
 
 Sociality is one of the most successful evolutionary strategies in animals, yet its ecological drivers remain poorly understood. Ants, with their extraordinary diversity of social organizations, offer a unique opportunity to explore how sociality relates to the environment. By combining a global database of social traits for over 3,000 species with environmental data, we show that distinct compositions of social traits recur across continents under similar ecological conditions. These global parallels reveal that environmental factors shape the distribution of ant sociality, making it a key dimension of ecological adaptation.
@@ -37,7 +37,7 @@ You can download the entire project as a `.zip` from [this URL](https://github.c
 
 Please cite this research article as:
   
-> Pérochon, E., Guénard, B., Gippet, J.M.W., Klaftenberger, K., Ollier, S., & Bertelsmeier, C. (2025). Environmental conditions shape the global distribution of ant sociality, in prep.
+> Pérochon, E., Guénard, B., Gippet, J.M.W., Klaftenberger, K., Ollier, S., & Bertelsmeier, C. (2025). Environmental conditions shape the global distribution of ant societies, in prep.
 
 
 
