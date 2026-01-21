@@ -37,7 +37,7 @@ You can download the entire project as a `.zip` from [this URL](https://github.c
 
 Please cite this research article as:
   
-> Pérochon, E., Guénard, B., Gippet, J.M.W., Klaftenberger, K., Ollier, S., & Bertelsmeier, C. (2026). Environmental conditions shape the global distribution of ant societies, in prep.
+> Pérochon, E., Guénard, B., Gippet, J.M.W., Klaftenberger, T., Ollier, S., & Bertelsmeier, C. (2026). Environmental conditions shape the global distribution of ant societies, in prep.
 
 
 
